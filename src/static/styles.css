@@ -1,0 +1,224 @@
+:root {
+  --bg: #f6efe4;
+  --panel: rgba(255, 252, 247, 0.9);
+  --ink: #10211c;
+  --muted: #5f6a65;
+  --line: rgba(16, 33, 28, 0.12);
+  --accent: #0f8b6d;
+  --accent-strong: #06634e;
+  --warm: #d56b3f;
+  --shadow: 0 24px 60px rgba(29, 49, 41, 0.12);
+  --radius: 26px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI Variable Text", "Trebuchet MS", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(213, 107, 63, 0.18), transparent 30%),
+    radial-gradient(circle at top right, rgba(15, 139, 109, 0.18), transparent 32%),
+    linear-gradient(180deg, #fcf7ef 0%, var(--bg) 100%);
+  min-height: 100vh;
+}
+
+.page-shell {
+  width: min(760px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 48px 0;
+  min-height: 100vh;
+  display: grid;
+  align-content: center;
+}
+
+.banner {
+  margin: 20px 0 0;
+  padding: 14px 18px;
+  border-radius: 18px;
+  animation: reveal 0.35s ease-out;
+}
+
+.banner p {
+  margin: 0;
+  font-weight: 600;
+}
+
+.banner-success {
+  background: rgba(15, 139, 109, 0.12);
+  border: 1px solid rgba(15, 139, 109, 0.24);
+}
+
+.banner-error {
+  background: rgba(213, 107, 63, 0.12);
+  border: 1px solid rgba(213, 107, 63, 0.24);
+}
+
+.card {
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 24px;
+  animation: reveal 0.45s ease-out;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.section-header h2 {
+  margin: 0;
+  font-family: "Bahnschrift", "Trebuchet MS", sans-serif;
+  letter-spacing: -0.02em;
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(16, 33, 28, 0.06);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+form {
+  display: grid;
+  gap: 16px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.hint {
+  font-size: 0.92rem;
+  color: var(--muted);
+  line-height: 1.55;
+  margin: 0;
+}
+
+input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 13px 14px;
+  font: inherit;
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--ink);
+}
+
+input:focus {
+  outline: 2px solid rgba(15, 139, 109, 0.18);
+  border-color: rgba(15, 139, 109, 0.42);
+}
+
+.camera-shell {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 22px;
+  background: rgba(16, 33, 28, 0.04);
+  border: 1px solid rgba(16, 33, 28, 0.08);
+}
+
+.camera-preview {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 18px;
+  background: #101714;
+  object-fit: cover;
+}
+
+.camera-status {
+  margin: 0;
+  font-size: 0.92rem;
+  color: var(--muted);
+}
+
+.camera-status.ready {
+  color: var(--accent-strong);
+}
+
+.camera-status.error {
+  color: #9b4a2a;
+}
+
+.button-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+button {
+  appearance: none;
+  border: none;
+  border-radius: 16px;
+  padding: 13px 18px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  color: white;
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  box-shadow: 0 16px 30px rgba(15, 139, 109, 0.2);
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+button.alt {
+  background: linear-gradient(135deg, var(--warm), #b5542b);
+  box-shadow: 0 16px 30px rgba(213, 107, 63, 0.2);
+}
+
+button.ghost {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(16, 33, 28, 0.12);
+  box-shadow: none;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.hidden {
+  display: none;
+}
+
+@keyframes reveal {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 960px) {
+  .page-shell {
+    width: min(100% - 18px, 760px);
+    padding-top: 12px;
+  }
+}

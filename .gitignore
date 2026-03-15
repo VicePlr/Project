@@ -2,6 +2,8 @@
 # Arquivos de configuração/variáveis
 # ================================
 .env
+venv/
+.venv/
 
 # ================================
 # Arquivos temporários e de cache

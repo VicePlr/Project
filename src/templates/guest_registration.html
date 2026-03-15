@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cổng Đăng Ký Khách</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page-shell">
+      __MESSAGE_HTML__
+
+      <section class="card">
+        <div class="section-header">
+          <h2>Đăng Ký Khách</h2>
+          <span class="eyebrow">Tự động cấp mã khách</span>
+        </div>
+        <p class="hint">
+          Trang này chỉ dùng để đăng ký khách. Nhập biển số xe, sau đó tải ảnh hoặc
+          video khuôn mặt lên, hoặc quay nhanh trực tiếp trên trình duyệt. Hệ thống sẽ
+          tự động cấp mã khách mới cho mỗi lượt đăng ký.
+        </p>
+        <form method="post" action="/register" enctype="multipart/form-data" id="guest-register-form">
+          <label>
+            Biển Số Xe
+            <input type="text" name="plate" placeholder="Ví dụ: 14-N1 135.62" required />
+          </label>
+
+          <label>
+            Tải Ảnh Hoặc Video Khuôn Mặt
+            <input type="file" name="face_media" accept="image/*,video/*" />
+          </label>
+
+          <div class="camera-shell">
+            <label>
+              Quay Khuôn Mặt Bằng Camera
+              <video id="camera-preview" class="camera-preview" autoplay muted playsinline></video>
+            </label>
+            <p class="camera-status" id="camera-status">
+              Tải tệp lên hoặc quay một video khuôn mặt ngắn tại đây.
+            </p>
+            <div class="button-row">
+              <button type="button" id="start-camera" class="ghost">Bật Camera</button>
+              <button type="button" id="start-recording" class="alt" disabled>Bắt Đầu Quay</button>
+              <button type="button" id="stop-recording" disabled>Dừng Quay</button>
+            </div>
+            <video id="recorded-preview" class="camera-preview hidden" controls playsinline></video>
+          </div>
+
+          <div class="button-row">
+            <button type="submit">Đăng Ký Khách</button>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <script>
+      const form = document.getElementById("guest-register-form");
+      const plateInput = form.querySelector('input[name="plate"]');
+      const uploadInput = form.querySelector('input[name="face_media"]');
+      const cameraPreview = document.getElementById("camera-preview");
+      const recordedPreview = document.getElementById("recorded-preview");
+      const cameraStatus = document.getElementById("camera-status");
+      const startCameraButton = document.getElementById("start-camera");
+      const startRecordingButton = document.getElementById("start-recording");
+      const stopRecordingButton = document.getElementById("stop-recording");
+      const submitButton = form.querySelector('button[type="submit"]');
+
+      const MAX_RECORDING_MS = 10000;
+      const RECORDED_VIDEO_BITS_PER_SECOND = 450000;
+
+      let stream = null;
+      let recorder = null;
+      let recordedChunks = [];
+      let recordedBlob = null;
+      let recordingTimeoutId = null;
+
+      function setStatus(message, tone) {
+        cameraStatus.textContent = message;
+        cameraStatus.classList.remove("ready", "error");
+        if (tone) {
+          cameraStatus.classList.add(tone);
+        }
+      }
+
+      function clearRecordedPreview() {
+        const objectUrl = recordedPreview.dataset.objectUrl;
+        if (objectUrl) {
+          URL.revokeObjectURL(objectUrl);
+          delete recordedPreview.dataset.objectUrl;
+        }
+        recordedPreview.pause();
+        recordedPreview.classList.add("hidden");
+        recordedPreview.removeAttribute("src");
+        recordedPreview.load();
+      }
+
+      function resetRecordedCapture() {
+        recordedBlob = null;
+        clearRecordedPreview();
+      }
+
+      function formatFileSize(byteCount) {
+        if (byteCount < 1024) {
+          return `${byteCount} B`;
+        }
+        if (byteCount < 1024 * 1024) {
+          return `${(byteCount / 1024).toFixed(0)} KB`;
+        }
+        return `${(byteCount / (1024 * 1024)).toFixed(2)} MB`;
+      }
+
+      function guessRecordedFilename(mimeType) {
+        const normalizedMimeType = (mimeType || "").toLowerCase();
+        if (normalizedMimeType.includes("mp4")) {
+          return "recorded_face.mp4";
+        }
+        if (normalizedMimeType.includes("ogg")) {
+          return "recorded_face.ogv";
+        }
+        return "recorded_face.webm";
+      }
+
+      function getRecorderOptions() {
+        const candidates = [
+          "video/webm;codecs=vp8",
+          "video/webm",
+          "video/webm;codecs=vp9",
+          "video/mp4",
+        ];
+
+        if (!window.MediaRecorder) {
+          return null;
+        }
+
+        for (const mimeType of candidates) {
+          if (!MediaRecorder.isTypeSupported || MediaRecorder.isTypeSupported(mimeType)) {
+            return { mimeType };
+          }
+        }
+        return {};
+      }
+
+      async function startCamera() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          setStatus("Trình duyệt này không hỗ trợ camera. Vui lòng tải tệp lên.", "error");
+          return;
+        }
+
+        if (stream) {
+          setStatus("Camera đã sẵn sàng.", "ready");
+          startRecordingButton.disabled = false;
+          return;
+        }
+
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: "user",
+              width: { ideal: 480, max: 640 },
+              height: { ideal: 360, max: 480 },
+              frameRate: { ideal: 12, max: 15 },
+            },
+            audio: false,
+          });
+          cameraPreview.srcObject = stream;
+          startRecordingButton.disabled = false;
+          setStatus("Camera đã sẵn sàng. Hãy quay một video khuôn mặt ngắn.", "ready");
+        } catch (error) {
+          setStatus("Không thể truy cập camera hoặc chưa được cấp quyền sử dụng.", "error");
+        }
+      }
+
+      function startRecording() {
+        const options = getRecorderOptions();
+        if (!stream || !options) {
+          setStatus("Không thể quay video trên trình duyệt này. Vui lòng tải tệp lên.", "error");
+          return;
+        }
+
+        if (recordingTimeoutId) {
+          window.clearTimeout(recordingTimeoutId);
+          recordingTimeoutId = null;
+        }
+
+        uploadInput.value = "";
+        recordedChunks = [];
+        resetRecordedCapture();
+
+        recorder = new MediaRecorder(stream, {
+          ...options,
+          videoBitsPerSecond: RECORDED_VIDEO_BITS_PER_SECOND,
+        });
+
+        recorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            recordedChunks.push(event.data);
+          }
+        };
+
+        recorder.onstop = () => {
+          if (recordingTimeoutId) {
+            window.clearTimeout(recordingTimeoutId);
+            recordingTimeoutId = null;
+          }
+
+          if (!recordedChunks.length) {
+            setStatus("Không thu được video từ camera. Vui lòng thử lại.", "error");
+            startRecordingButton.disabled = false;
+            stopRecordingButton.disabled = true;
+            return;
+          }
+
+          const mimeType = recorder.mimeType || options.mimeType || "video/webm";
+          recordedBlob = new Blob(recordedChunks, { type: mimeType });
+          const objectUrl = URL.createObjectURL(recordedBlob);
+          recordedPreview.dataset.objectUrl = objectUrl;
+          recordedPreview.src = objectUrl;
+          recordedPreview.classList.remove("hidden");
+          setStatus(
+            `Video đã quay xong (${formatFileSize(recordedBlob.size)}) và sẵn sàng để gửi đăng ký.`,
+            "ready"
+          );
+          startRecordingButton.disabled = false;
+          stopRecordingButton.disabled = true;
+        };
+
+        recorder.start(250);
+        recordingTimeoutId = window.setTimeout(() => {
+          if (recorder && recorder.state === "recording") {
+            recorder.stop();
+          }
+        }, MAX_RECORDING_MS);
+
+        startRecordingButton.disabled = true;
+        stopRecordingButton.disabled = false;
+        setStatus(
+          "Đang quay... hãy giữ khuôn mặt ở giữa khung hình. Video sẽ tự dừng sau 10 giây để gửi nhanh hơn.",
+          "ready"
+        );
+      }
+
+      function stopRecording() {
+        if (recorder && recorder.state !== "inactive") {
+          recorder.stop();
+        }
+      }
+
+      async function submitRecordedVideo(event) {
+        if (!recordedBlob) {
+          return;
+        }
+
+        event.preventDefault();
+        submitButton.disabled = true;
+        startCameraButton.disabled = true;
+        startRecordingButton.disabled = true;
+        stopRecordingButton.disabled = true;
+        setStatus("Đang gửi đăng ký, vui lòng chờ...", "ready");
+
+        const formData = new FormData();
+        formData.append("plate", plateInput.value.trim());
+        formData.append("face_media", recordedBlob, guessRecordedFilename(recordedBlob.type));
+
+        try {
+          const response = await fetch(form.action, {
+            method: form.method || "POST",
+            body: formData,
+          });
+          const responseHtml = await response.text();
+          document.open();
+          document.write(responseHtml);
+          document.close();
+        } catch (error) {
+          submitButton.disabled = false;
+          startCameraButton.disabled = false;
+          startRecordingButton.disabled = !stream;
+          stopRecordingButton.disabled = true;
+          setStatus("Không thể gửi đăng ký. Vui lòng thử lại.", "error");
+        }
+      }
+
+      startCameraButton.addEventListener("click", () => {
+        startCamera();
+      });
+
+      startRecordingButton.addEventListener("click", () => {
+        startRecording();
+      });
+
+      stopRecordingButton.addEventListener("click", () => {
+        stopRecording();
+      });
+
+      uploadInput.addEventListener("change", () => {
+        if (uploadInput.files && uploadInput.files.length > 0) {
+          resetRecordedCapture();
+          setStatus("Đã chọn tệp tải lên. Hệ thống sẽ dùng tệp này để đăng ký.", "ready");
+        }
+      });
+
+      form.addEventListener("submit", (event) => {
+        const hasUpload = uploadInput.files && uploadInput.files.length > 0;
+        const hasRecording = Boolean(recordedBlob);
+
+        if (hasUpload) {
+          return;
+        }
+
+        if (!hasRecording) {
+          event.preventDefault();
+          setStatus("Vui lòng tải ảnh/video khuôn mặt hoặc quay video trước khi gửi.", "error");
+          return;
+        }
+
+        submitRecordedVideo(event);
+      });
+
+      window.addEventListener("beforeunload", () => {
+        if (recordingTimeoutId) {
+          window.clearTimeout(recordingTimeoutId);
+        }
+        clearRecordedPreview();
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop());
+        }
+      });
+    </script>
+  </body>
+</html>
