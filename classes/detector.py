@@ -5,6 +5,8 @@ import cv2
 import torch
 from yolov5.models.yolo import DetectionModel
 
+from classes.yolov5_logging import silence_yolov5_logger
+
 
 class YOLOv5Inference:
     def __init__(
@@ -21,7 +23,8 @@ class YOLOv5Inference:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         checkpoint = torch.load(model_path, weights_only=False, map_location=self.device)
-        self.model = DetectionModel(checkpoint["model"].yaml)
+        with silence_yolov5_logger():
+            self.model = DetectionModel(checkpoint["model"].yaml)
         self.model.load_state_dict(checkpoint["model"].state_dict())
         self.model.to(self.device).eval()
 

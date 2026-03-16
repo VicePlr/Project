@@ -171,10 +171,12 @@ def ensure_preprocessing_dirs(checkpoint_dir: str):
     if os.path.isdir(preprocessing_dir):
         shutil.rmtree(preprocessing_dir)
     face_bbox_dir = os.path.join(preprocessing_dir, "face_bbox")
+    face_cropped_dir = os.path.join(preprocessing_dir, "face_cropped")
     plate_dir = os.path.join(preprocessing_dir, "plate")
     os.makedirs(face_bbox_dir, exist_ok=True)
+    os.makedirs(face_cropped_dir, exist_ok=True)
     os.makedirs(plate_dir, exist_ok=True)
-    return preprocessing_dir, face_bbox_dir, plate_dir
+    return preprocessing_dir, face_bbox_dir, face_cropped_dir, plate_dir
 
 
 def build_demo_best_match(best_match: dict):
@@ -183,19 +185,15 @@ def build_demo_best_match(best_match: dict):
 
     demo_match = {
         "scanned_plate": best_match["scanned_plate"],
+        "registered_plate": best_match.get("registered_plate"),
+        "plate_image": best_match["plate_image"],
         "plate_score": best_match["scanned_plate_confidence"],
         "plate_matches": best_match["plate_matches"],
-        "plate_image": best_match["plate_image"],
-    }
-    optional_fields = {
         "user_id": best_match.get("user_id"),
         "face_similarity": best_match.get("face_similarity"),
-        "registered_plate": best_match.get("registered_plate"),
         "face_image": best_match.get("face_image"),
     }
-    for key, value in optional_fields.items():
-        if value is not None:
-            demo_match[key] = value
+    demo_match = {key: value for key, value in demo_match.items() if value is not None}
     return demo_match
 
 
@@ -253,7 +251,9 @@ def verify_checkpoint(checkpoint_id: str, users_csv: str = None):
         return result_payload, output_path
 
     verifier = build_verifier(users_csv)
-    _, face_bbox_dir, plate_preprocessing_dir = ensure_preprocessing_dirs(checkpoint_dir)
+    _, face_bbox_dir, face_cropped_dir, plate_preprocessing_dir = ensure_preprocessing_dirs(
+        checkpoint_dir
+    )
 
     plate_results = []
     for plate_input in plate_inputs:
@@ -298,6 +298,11 @@ def verify_checkpoint(checkpoint_id: str, users_csv: str = None):
         verifier.face_service.save_detection_preview(
             face_input["image_source"],
             os.path.join(face_bbox_dir, face_input["preprocessing_name"]),
+            analysis=face_analysis,
+        )
+        verifier.face_service.save_face_crop(
+            face_input["image_source"],
+            os.path.join(face_cropped_dir, face_input["preprocessing_name"]),
             analysis=face_analysis,
         )
 

@@ -39,11 +39,13 @@ class FaceRecognitionService:
         self,
         detector_model_path: str,
         recognizer_model_path: str,
-        score_threshold: float = 0.363,
+        score_threshold: float = 0.70,
     ):
         self.score_threshold = score_threshold
         self.detector = create_face_detector(detector_model_path)
         self.recognizer = cv2.FaceRecognizerSF_create(recognizer_model_path, "")
+        self.max_selected_detection_variants = 2
+        self.max_selected_crop_variants = 5
 
     @staticmethod
     def _load_image(image_source):
@@ -97,10 +99,18 @@ class FaceRecognitionService:
             )
         )
         variants.append(cv2.convertScaleAbs(image, alpha=1.1, beta=10))
+        variants.append(cv2.bilateralFilter(image, d=5, sigmaColor=30, sigmaSpace=30))
+
+        gamma_lift = np.power(image.astype(np.float32) / 255.0, 0.90)
+        variants.append(np.clip(gamma_lift * 255.0, 0, 255).astype(np.uint8))
 
         sharpen_kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
         variants.append(cv2.filter2D(image, -1, sharpen_kernel))
-        return variants
+        unique_variants = []
+        for variant in variants:
+            if not any(np.array_equal(variant, existing) for existing in unique_variants):
+                unique_variants.append(variant)
+        return unique_variants
 
     @staticmethod
     def _face_priority(face: np.ndarray) -> tuple:
@@ -109,7 +119,32 @@ class FaceRecognitionService:
         return score, area
 
     @staticmethod
-    def _enhance_face_crop(face_crop: np.ndarray) -> List[np.ndarray]:
+    def _apply_focus_mask(face_crop: np.ndarray, center_y_ratio: float) -> np.ndarray:
+        height, width = face_crop.shape[:2]
+        mask = np.zeros((height, width), dtype=np.float32)
+
+        center = (width // 2, int(height * center_y_ratio))
+        axes = (max(int(width * 0.34), 1), max(int(height * 0.42), 1))
+        cv2.ellipse(mask, center, axes, 0, 0, 360, 1.0, thickness=-1)
+        cv2.rectangle(
+            mask,
+            (max(int(width * 0.20), 0), max(int(height * 0.30), 0)),
+            (min(int(width * 0.80), width - 1), min(int(height * 0.98), height - 1)),
+            1.0,
+            thickness=-1,
+        )
+        sigma_x = max(width * 0.08, 1.0)
+        sigma_y = max(height * 0.08, 1.0)
+        mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=sigma_x, sigmaY=sigma_y)
+        mask = 0.35 + 0.65 * (mask / max(float(mask.max()), 1e-6))
+        return np.clip(
+            face_crop.astype(np.float32) * mask[..., None],
+            0,
+            255,
+        ).astype(np.uint8)
+
+    @classmethod
+    def _enhance_face_crop(cls, face_crop: np.ndarray) -> List[np.ndarray]:
         variants = [face_crop]
         height, width = face_crop.shape[:2]
 
@@ -139,9 +174,12 @@ class FaceRecognitionService:
         if lower_tight_crop.size > 0:
             variants.append(cv2.resize(lower_tight_crop, (width, height)))
 
+        denoised_variant = cv2.bilateralFilter(face_crop, d=5, sigmaColor=30, sigmaSpace=30)
+        variants.append(denoised_variant)
+
         # Helmet shots often leave only part of the face visible, so mild contrast
         # recovery and sharpening can produce a more stable embedding.
-        lab = cv2.cvtColor(face_crop, cv2.COLOR_BGR2LAB)
+        lab = cv2.cvtColor(denoised_variant, cv2.COLOR_BGR2LAB)
         l_channel, a_channel, b_channel = cv2.split(lab)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         enhanced_l = clahe.apply(l_channel)
@@ -153,12 +191,61 @@ class FaceRecognitionService:
         sharpen_kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
         sharpened_variant = cv2.filter2D(contrast_variant, -1, sharpen_kernel)
         variants.append(sharpened_variant)
+        variants.append(cls._apply_focus_mask(contrast_variant, 0.58))
+        variants.append(cls._apply_focus_mask(sharpened_variant, 0.64))
 
         unique_variants = []
         for variant in variants:
             if not any(np.array_equal(variant, existing) for existing in unique_variants):
                 unique_variants.append(variant)
         return unique_variants
+
+    @staticmethod
+    def _landmark_points(face: np.ndarray) -> Optional[np.ndarray]:
+        if len(face) < 14:
+            return None
+        return face[4:14].reshape(5, 2).astype(np.float32)
+
+    @classmethod
+    def _landmark_quality(cls, face: np.ndarray) -> float:
+        landmarks = cls._landmark_points(face)
+        if landmarks is None:
+            return 0.0
+
+        left_eye, right_eye, nose, mouth_left, mouth_right = landmarks
+        eye_distance = max(float(np.linalg.norm(right_eye - left_eye)), 1e-6)
+        eyes_center = (left_eye + right_eye) / 2.0
+        mouth_center = (mouth_left + mouth_right) / 2.0
+
+        roll_score = max(
+            0.0,
+            1.0 - abs(float(left_eye[1] - right_eye[1])) / max(eye_distance * 0.35, 1e-6),
+        )
+        nose_alignment_score = max(
+            0.0,
+            1.0 - abs(float(nose[0] - eyes_center[0])) / max(eye_distance * 0.35, 1e-6),
+        )
+        mouth_alignment_score = max(
+            0.0,
+            1.0 - abs(float(mouth_center[0] - nose[0])) / max(eye_distance * 0.35, 1e-6),
+        )
+
+        eye_to_nose = max(float(nose[1] - eyes_center[1]), 0.0)
+        nose_to_mouth = max(float(mouth_center[1] - nose[1]), 0.0)
+        vertical_ratio = nose_to_mouth / max(eye_to_nose, 1e-6)
+        vertical_ratio_score = max(0.0, 1.0 - abs(vertical_ratio - 1.0) / 0.8)
+
+        visibility_score = 1.0
+        if eye_to_nose <= 0.0 or nose_to_mouth <= 0.0:
+            visibility_score = 0.2
+
+        return float(
+            0.25 * roll_score
+            + 0.25 * nose_alignment_score
+            + 0.20 * mouth_alignment_score
+            + 0.20 * vertical_ratio_score
+            + 0.10 * visibility_score
+        )
 
     @staticmethod
     def _center_score(image_shape: tuple, face: np.ndarray) -> float:
@@ -190,16 +277,18 @@ class FaceRecognitionService:
         sharpness = float(cv2.Laplacian(aligned_gray, cv2.CV_32F).var())
         brightness = float(aligned_gray.mean())
         center_score = self._center_score(image.shape, face)
+        landmark_score = self._landmark_quality(face)
 
         normalized_area = min(face_area_ratio / 0.08, 1.0)
         normalized_sharpness = min(sharpness / 140.0, 1.0)
         brightness_score = self._brightness_score(brightness)
         quality_score = (
-            0.35 * detection_confidence
-            + 0.20 * normalized_area
-            + 0.25 * normalized_sharpness
-            + 0.10 * brightness_score
-            + 0.10 * center_score
+            0.25 * detection_confidence
+            + 0.18 * normalized_area
+            + 0.20 * normalized_sharpness
+            + 0.08 * brightness_score
+            + 0.07 * center_score
+            + 0.22 * landmark_score
         )
 
         return {
@@ -208,6 +297,7 @@ class FaceRecognitionService:
             "sharpness": sharpness,
             "brightness": brightness,
             "center_score": center_score,
+            "landmark_score": landmark_score,
             "quality_score": float(quality_score),
         }
 
@@ -215,6 +305,7 @@ class FaceRecognitionService:
     def _analysis_priority(metrics: dict, face: np.ndarray) -> tuple:
         return (
             metrics["quality_score"],
+            metrics.get("landmark_score", 0.0),
             metrics["detection_confidence"],
             metrics["face_area_ratio"],
             float(face[2] * face[3]),
@@ -227,7 +318,27 @@ class FaceRecognitionService:
         embeddings = []
         for variant in self._enhance_face_crop(aligned_face):
             embeddings.append(self.recognizer.feature(variant))
-        return embeddings
+
+        if len(embeddings) <= self.max_selected_crop_variants:
+            return embeddings
+
+        ranked_embeddings = []
+        for index, embedding in enumerate(embeddings):
+            peer_scores = [
+                self.cosine_similarity(embedding, peer_embedding)
+                for peer_index, peer_embedding in enumerate(embeddings)
+                if peer_index != index
+            ]
+            stability_score = float(np.mean(peer_scores)) if peer_scores else 1.0
+            ranked_embeddings.append((stability_score, index, embedding))
+
+        selected_indices = {0}
+        for _, index, _ in sorted(ranked_embeddings, key=lambda item: item[0], reverse=True):
+            selected_indices.add(index)
+            if len(selected_indices) >= self.max_selected_crop_variants:
+                break
+
+        return [embedding for index, embedding in enumerate(embeddings) if index in selected_indices]
 
     def _extract_embeddings_from_face(self, image: np.ndarray, face: np.ndarray) -> List[np.ndarray]:
         aligned_face = self._align_face(image, face)
@@ -236,9 +347,7 @@ class FaceRecognitionService:
     def analyze_face(self, image_source) -> FaceAnalysisResult:
         image = self._load_image(image_source)
         source = image_source if isinstance(image_source, str) else None
-        all_embeddings: List[np.ndarray] = []
-        best_face = None
-        best_metrics = None
+        candidates = []
 
         for variant in self._generate_detection_variants(image):
             face = self._detect_largest_face(variant)
@@ -246,16 +355,17 @@ class FaceRecognitionService:
                 continue
 
             aligned_face = self._align_face(variant, face)
-            all_embeddings.extend(self._extract_embeddings_from_aligned_face(aligned_face))
+            embeddings = self._extract_embeddings_from_aligned_face(aligned_face)
             metrics = self._calculate_face_quality(variant, face, aligned_face)
+            candidates.append(
+                {
+                    "face": face.copy(),
+                    "metrics": metrics,
+                    "embeddings": embeddings,
+                }
+            )
 
-            if best_metrics is None or self._analysis_priority(metrics, face) > self._analysis_priority(
-                best_metrics, best_face
-            ):
-                best_face = face.copy()
-                best_metrics = metrics
-
-        if best_metrics is None or best_face is None:
+        if not candidates:
             return FaceAnalysisResult(
                 source=source,
                 image=image,
@@ -269,17 +379,31 @@ class FaceRecognitionService:
                 quality_score=None,
             )
 
+        selected_candidates = sorted(
+            candidates,
+            key=lambda candidate: self._analysis_priority(
+                candidate["metrics"], candidate["face"]
+            ),
+            reverse=True,
+        )[: self.max_selected_detection_variants]
+        best_candidate = selected_candidates[0]
+        all_embeddings = [
+            embedding
+            for candidate in selected_candidates
+            for embedding in candidate["embeddings"]
+        ]
+
         return FaceAnalysisResult(
             source=source,
             image=image,
-            face=best_face,
+            face=best_candidate["face"],
             embeddings=all_embeddings,
-            detection_confidence=best_metrics["detection_confidence"],
-            face_area_ratio=best_metrics["face_area_ratio"],
-            sharpness=best_metrics["sharpness"],
-            brightness=best_metrics["brightness"],
-            center_score=best_metrics["center_score"],
-            quality_score=best_metrics["quality_score"],
+            detection_confidence=best_candidate["metrics"]["detection_confidence"],
+            face_area_ratio=best_candidate["metrics"]["face_area_ratio"],
+            sharpness=best_candidate["metrics"]["sharpness"],
+            brightness=best_candidate["metrics"]["brightness"],
+            center_score=best_candidate["metrics"]["center_score"],
+            quality_score=best_candidate["metrics"]["quality_score"],
         )
 
     def detect_largest_face(self, image_source):
@@ -293,17 +417,42 @@ class FaceRecognitionService:
     def extract_embeddings(self, image_source) -> List[np.ndarray]:
         return self.analyze_face(image_source).embeddings
 
+    @staticmethod
+    def _extract_face_bounds(face_analysis: FaceAnalysisResult):
+        if face_analysis.face is None:
+            return None
+
+        x, y, width, height = map(int, face_analysis.face[:4])
+        image_height, image_width = face_analysis.image.shape[:2]
+        x1 = max(0, x)
+        y1 = max(0, y)
+        x2 = min(image_width, x + max(width, 0))
+        y2 = min(image_height, y + max(height, 0))
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return x1, y1, x2, y2
+
+    def extract_face_crop(self, image_source, analysis=None):
+        face_analysis = analysis or self.analyze_face(image_source)
+        bounds = self._extract_face_bounds(face_analysis)
+        if bounds is None:
+            return None
+
+        x1, y1, x2, y2 = bounds
+        return face_analysis.image[y1:y2, x1:x2].copy()
+
     def save_detection_preview(self, image_source, output_path: str, analysis=None) -> bool:
         face_analysis = analysis or self.analyze_face(image_source)
         preview = face_analysis.image.copy()
 
-        if face_analysis.face is not None:
-            x, y, width, height = map(int, face_analysis.face[:4])
-            cv2.rectangle(preview, (x, y), (x + width, y + height), (0, 255, 0), 2)
+        bounds = self._extract_face_bounds(face_analysis)
+        if bounds is not None:
+            x1, y1, x2, y2 = bounds
+            cv2.rectangle(preview, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(
                 preview,
                 "face",
-                (x, max(20, y - 8)),
+                (x1, max(20, y1 - 8)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
                 (0, 255, 0),
@@ -313,7 +462,16 @@ class FaceRecognitionService:
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         cv2.imwrite(output_path, preview)
-        return face_analysis.face is not None
+        return bounds is not None
+
+    def save_face_crop(self, image_source, output_path: str, analysis=None) -> bool:
+        face_crop = self.extract_face_crop(image_source, analysis=analysis)
+        if face_crop is None:
+            return False
+
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        cv2.imwrite(output_path, face_crop)
+        return True
 
     def cosine_similarity(self, feature_a: np.ndarray, feature_b: np.ndarray) -> float:
         return float(
@@ -756,10 +914,29 @@ class UserFaceDatabase:
         prototype_score = self.face_recognizer.cosine_similarity(
             query_prototype, record_prototype
         )
+        query_support_similarity = float(
+            np.mean(
+                [similarity for similarity, _, _ in top_query_matches[: min(4, len(top_query_matches))]]
+            )
+        )
+        record_support_similarity = float(
+            np.mean(
+                [similarity for similarity, _ in top_record_matches[: min(4, len(top_record_matches))]]
+            )
+        )
+        stability_similarity = float(
+            (query_support_similarity + record_support_similarity) / 2.0
+        )
+        blended_similarity = float(
+            0.45 * best_score + 0.35 * prototype_score + 0.20 * stability_similarity
+        )
 
         return {
             "record": best_record,
-            "similarity": max(best_score, prototype_score),
+            "similarity": blended_similarity,
+            "best_similarity": best_score,
+            "prototype_similarity": prototype_score,
+            "stability_similarity": stability_similarity,
             "selected_sources": [analysis.source for analysis in selected_analyses if analysis.source],
         }
 
@@ -776,6 +953,7 @@ class UserFaceDatabase:
         self,
         usable_analyses: List[FaceAnalysisResult],
         candidate_user_ids: Optional[set] = None,
+        require_threshold: bool = True,
     ) -> Optional[dict]:
         if not usable_analyses:
             return None
@@ -796,7 +974,10 @@ class UserFaceDatabase:
                 best_score = user_match["similarity"]
                 best_selected_sources = user_match.get("selected_sources", [])
 
-        if best_record is None or not self.face_recognizer.is_match(best_score):
+        if best_record is None:
+            return None
+
+        if require_threshold and not self.face_recognizer.is_match(best_score):
             return None
 
         return {
@@ -852,7 +1033,7 @@ class UserFaceDatabase:
             return None
 
         best_multi_match = self._find_best_match_from_usable_analyses(
-            usable_analyses, candidate_user_ids={user_id}
+            usable_analyses, candidate_user_ids={user_id}, require_threshold=False
         )
         if len(usable_analyses) == 1:
             return best_multi_match
@@ -860,7 +1041,7 @@ class UserFaceDatabase:
         best_single_match = None
         for analysis in usable_analyses:
             single_match = self._find_best_match_from_usable_analyses(
-                [analysis], candidate_user_ids={user_id}
+                [analysis], candidate_user_ids={user_id}, require_threshold=False
             )
             if single_match is None:
                 continue
@@ -877,6 +1058,29 @@ class UserFaceDatabase:
             return best_single_match
 
         return best_multi_match
+
+    def find_best_alternative_match(
+        self, face_analyses: List[FaceAnalysisResult], excluded_user_id: str
+    ) -> Optional[dict]:
+        usable_analyses = [
+            analysis
+            for analysis in face_analyses
+            if analysis.face is not None and analysis.embeddings
+        ]
+        if not usable_analyses:
+            return None
+
+        candidate_user_ids = {
+            record.user_id for record in self.records if record.user_id != excluded_user_id
+        }
+        if not candidate_user_ids:
+            return None
+
+        return self._find_best_match_from_usable_analyses(
+            usable_analyses,
+            candidate_user_ids=candidate_user_ids,
+            require_threshold=False,
+        )
 
     def source_has_detectable_face(self, source_path: str) -> bool:
         preview_records = self._build_face_records_for_source(

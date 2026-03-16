@@ -15,6 +15,8 @@ import yaml
 from yolov5.models.yolo import DetectionModel
 from yolov5.utils.general import non_max_suppression
 
+from classes.yolov5_logging import silence_yolov5_logger
+
 
 class VietnamesePlatePostProcessor:
     @staticmethod
@@ -341,7 +343,8 @@ class VietnameseYOLOPlateRecognizer(OCRRecognizerBase):
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file '{model_path}' not found.")
         checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
-        model = DetectionModel(checkpoint["model"].yaml)
+        with silence_yolov5_logger():
+            model = DetectionModel(checkpoint["model"].yaml)
         model.load_state_dict(checkpoint["model"].state_dict())
         model.to(self.device).eval()
         names = list(getattr(checkpoint["model"], "names", []))

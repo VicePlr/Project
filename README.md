@@ -1,54 +1,63 @@
 # VehicleAccessVerifier
 
-VehicleAccessVerifier là bản demo kiểm soát ra vào tại checkpoint bằng cách kết hợp:
+VehicleAccessVerifier là bản demo kiểm soát ra vào tại điểm xác thực bằng cách kết hợp:
 
 - nhận dạng biển số xe
 - đối sánh khuôn mặt
 
-Hệ thống ra quyết định theo thứ tự:
-
-1. phát hiện biển số trong ảnh xe
-2. đọc ký tự trên biển số
-3. tìm người dùng đã đăng ký cho biển số đó
-4. chỉ so sánh khuôn mặt tại checkpoint với thư mục khuôn mặt của đúng người dùng đó
-5. ghi ra một kết quả cuối cùng trong `result.json`
-
-Cách làm này giúp ban giám khảo dễ hiểu: biển số được dùng để thu hẹp phạm vi tìm kiếm trước, sau đó khuôn mặt dùng để xác nhận danh tính.
-
-## Tóm Tắt Cho Ban Giám Khảo
+## Tổng Quan Hóa
 
 Đầu vào:
-- ảnh hoặc video biển số xe
-- ảnh hoặc video khuôn mặt người điều khiển
-- cơ sở dữ liệu người dùng trong `data/users/users.csv`
+- ảnh hoặc video của biển số xe, khuôn mặt người điều khiển
+- dữ liệu người dùng trong `data/users/users.csv`
 
 Đầu ra:
-- một file `result.json` cho mỗi checkpoint
+- một file `result.json` cho mỗi điểm xác thực
 - các ảnh tiền xử lý thể hiện vùng mặt và vùng biển số đã được phát hiện
 
-Quy tắc quyết định:
-- chỉ thành công khi biển số quét được khớp với một người dùng đã đăng ký và khuôn mặt cũng khớp với đúng người đó
+Quyết định:
+- quyết định xem người đó được phép đi tiếp hay vào vùng hỗ trợ dựa vào phần đầu ra `result.json`
 
 ## Quy Trình Xác Thực
 
-Với mỗi checkpoint như `CP1`, hệ thống sẽ:
+Với mỗi điểm xác thực (checkpoint) như `CP1`, hệ thống sẽ:
 
 1. đọc dữ liệu từ `data/incoming/CP1/face/` và `data/incoming/CP1/plate/`
-2. tự động lấy mẫu frame nếu đầu vào là video
-3. phát hiện vùng biển số
-4. chạy OCR trên biển số đã cắt và giữ lại kết quả đọc tốt nhất
-5. tra cứu người dùng tương ứng trong `data/users/users.csv`
-6. tìm bằng chứng khuôn mặt tốt nhất từ dữ liệu checkpoint
-7. chỉ so sánh khuôn mặt đó với thư mục khuôn mặt của người dùng đã khớp biển số
-8. ghi kết quả cuối cùng vào `data/incoming/CP1/result.json`
-9. làm mới thư mục `data/incoming/CP1/preprocessing/` để lưu bằng chứng trực quan
+2. phát hiện vùng biển số
+3. chạy OCR trên biển số đã cắt và giữ lại kết quả đọc tốt nhất
+4. tra cứu người dùng tương ứng trong `data/users/users.csv` dựa vào biển số vừa đọc được
+5. tìm dữ liệu khuôn mặt tốt nhất từ dữ liệu điểm xác thực
+6. chỉ so sánh khuôn mặt đó với thư mục khuôn mặt của người dùng đã khớp biển số
+7. ghi kết quả cuối cùng vào `data/incoming/CP1/result.json`
 
 ## Các Mô Hình Được Sử Dụng
 
-- `models/detector/yolo_detector_model.pt` (`YOLOv5`): dùng để phát hiện vùng biển số trong ảnh xe. Chúng tôi chọn mô hình này vì phát hiện đối tượng là cách nhanh và ổn định để cắt đúng biển số trước khi OCR.
-- `models/recognizer/license_plates_ocr_model.onnx`: dùng để đọc ký tự từ vùng biển số đã cắt. Chúng tôi chọn mô hình này vì gọn nhẹ, chạy nhanh trên CPU với ONNX Runtime, và phù hợp với chuỗi ký tự biển số ngắn.
-- `models/face/det_10g.onnx` (`SCRFD`): mô hình phát hiện khuôn mặt được dùng trong hệ thống. Chúng tôi dùng nó vì mạnh hơn các bộ phát hiện đơn giản khi xử lý ảnh và video thực tế tại checkpoint.
-- `models/face/face_recognition_sface_2021dec.onnx` (`SFace`): dùng để biến khuôn mặt đã phát hiện thành vector đặc trưng để so khớp. Chúng tôi chọn mô hình này vì tương thích tốt với OpenCV và cho phép so sánh cosine nhanh.
+- `models/detector/yolo_detector_model.pt (YOLOv5)`: dùng để phát hiện vùng biển số trong ảnh xe.
+Lý do lựa chọn: YOLOv5 là mô hình phát hiện đối tượng có tốc độ xử lý nhanh và độ ổn định cao, phù hợp với bài toán cần xác định đúng vị trí biển số trước khi đưa sang bước OCR. Việc tách chính xác vùng biển số giúp tăng đáng kể chất lượng nhận dạng ký tự ở bước sau.
+
+- `models/recognizer/license_plates_ocr_model.onnx`: dùng để đọc ký tự từ vùng biển số đã cắt.
+Lý do lựa chọn: mô hình ở định dạng ONNX có ưu điểm gọn nhẹ, dễ triển khai và chạy hiệu quả trên CPU. Và vì biển số có chuỗi ký tự ngắn và có cấu trúc tương đối rõ ràng, nên mô hình này đáp ứng tốt cả về tốc độ lẫn độ phù hợp thực tế.
+
+- `models/face/det_10g.onnx (SCRFD)`: dùng để phát hiện khuôn mặt trong ảnh hoặc video.
+Lý do lựa chọn: SCRFD cho khả năng phát hiện khuôn mặt tốt trong nhiều điều kiện thực tế như thay đổi góc mặt, ánh sáng hoặc chất lượng khung hình từ video. 
+
+- `models/face/face_recognition_sface_2021dec.onnx (SFace)`: dùng để trích xuất vector đặc trưng khuôn mặt để so khớp.
+Lý do lựa chọn: SFace có khả năng biểu diễn khuôn mặt dưới dạng vector đặc trưng gọn và hiệu quả, giúp việc so sánh khuôn mặt bằng độ tương đồng cosine diễn ra nhanh chóng.
+
+## File Users CSV
+
+Cấu trúc:
+
+```csv
+user_id,registered_plate,face_dir
+HE211206,14-N1 135.62,faces\HE211206
+HE210000,00A-000.00,faces\HE210000
+```
+
+Ý nghĩa:
+- `user_id`: mã định danh duy nhất của người dùng
+- `registered_plate`: biển số xe đã đăng ký cho người dùng
+- `face_dir`: thư mục chứa ảnh hoặc video khuôn mặt đã đăng ký
 
 ## Vì Sao Thiết Kế Như Vậy
 
@@ -62,13 +71,13 @@ Với mỗi checkpoint như `CP1`, hệ thống sẽ:
 Từ thư mục dự án:
 
 ```powershell
-venv\Scripts\python.exe src\verify_access.py --checkpoint-id CP1
+.\VehicleAccessVerifier\venv\Scripts\python.exe .\VehicleAccessVerifier\src\verify_access.py --checkpoint-id CP1
 ```
 
 Để chạy cổng đăng ký khách trên trình duyệt:
 
 ```powershell
-venv\Scripts\python.exe src\main.py
+.\VehicleAccessVerifier\venv\Scripts\python.exe .\VehicleAccessVerifier\src\main.py
 ```
 
 Sau đó mở `http://localhost:8000`.
@@ -108,21 +117,6 @@ Ghi chú:
 - `plate/` chứa ảnh hoặc video biển số xe
 - `users.csv` lưu biển số đã đăng ký và thư mục khuôn mặt của từng người dùng
 - `faces/<user_id>/` chứa ảnh hoặc video khuôn mặt đã đăng ký của người dùng đó
-
-## File Users CSV
-
-Cấu trúc:
-
-```csv
-user_id,registered_plate,face_dir
-HE211206,14-N1 135.62,faces/HE211206
-HE210000,00A-000.00,faces/HE210000
-```
-
-Ý nghĩa:
-- `user_id`: mã định danh duy nhất của người dùng
-- `registered_plate`: biển số xe đã đăng ký cho người dùng
-- `face_dir`: thư mục chứa ảnh hoặc video khuôn mặt đã đăng ký
 
 ## Đăng Ký Khách
 

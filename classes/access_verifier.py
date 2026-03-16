@@ -66,6 +66,8 @@ class AccessVerifier:
             face_detector_model_path, face_recognizer_model_path
         )
         self.user_database = UserFaceDatabase(users_csv_path, self.face_service)
+        self.registered_user_min_similarity = max(self.face_service.score_threshold, 0.70)
+        self.registered_user_min_margin = 0.04
 
     def analyze_face_image(self, face_image_path: str) -> FaceAnalysisResult:
         return self.face_service.analyze_face(face_image_path)
@@ -109,6 +111,31 @@ class AccessVerifier:
                 reason="Face did not match the enrolled face folder for the scanned plate.",
                 face_images_used=None,
             )
+
+        if face_match["similarity"] < self.registered_user_min_similarity:
+            return FaceMatchResult(
+                matched=False,
+                user_id=registered_user["user_id"],
+                face_similarity=face_match["similarity"],
+                registered_plate=registered_user["registered_plate"],
+                reason="Face similarity for the scanned plate was below the high-accuracy acceptance threshold.",
+                face_images_used=face_match.get("selected_face_sources"),
+            )
+
+        alternative_match = self.user_database.find_best_alternative_match(
+            face_analyses, registered_user["user_id"]
+        )
+        if alternative_match is not None:
+            similarity_margin = face_match["similarity"] - alternative_match["similarity"]
+            if similarity_margin < self.registered_user_min_margin:
+                return FaceMatchResult(
+                    matched=False,
+                    user_id=registered_user["user_id"],
+                    face_similarity=face_match["similarity"],
+                    registered_plate=registered_user["registered_plate"],
+                    reason="Face matched the plate owner, but not distinctly enough from another enrolled user.",
+                    face_images_used=face_match.get("selected_face_sources"),
+                )
 
         return FaceMatchResult(
             matched=True,
@@ -222,7 +249,7 @@ class AccessVerifier:
                 checkpoint_id=checkpoint_id,
                 success=False,
                 user_id=registered_user["user_id"],
-                face_similarity=None,
+                face_similarity=face_match.face_similarity,
                 registered_plate=registered_user["registered_plate"],
                 scanned_plate=plate_scan.scanned_plate,
                 scanned_plate_confidence=plate_scan.scanned_plate_confidence,
