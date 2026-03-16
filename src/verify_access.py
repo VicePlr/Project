@@ -17,6 +17,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 FACE_VIDEO_SAMPLE_FRAME_COUNT = 12
 PLATE_VIDEO_SAMPLE_FRAME_COUNT = 12
+PREPROCESSING_PREVIEW_LIMIT = 3
 
 
 def resolve_path(*relative_parts):
@@ -166,6 +167,31 @@ def build_failure_payload(checkpoint_id: str, reason: str):
     }
 
 
+def select_face_preprocessing_entries(face_entries, limit: int):
+    ranked_entries = sorted(
+        face_entries,
+        key=lambda entry: (
+            entry["analysis"].face is not None,
+            entry["analysis"].quality_score or -1.0,
+            entry["analysis"].detection_confidence or -1.0,
+        ),
+        reverse=True,
+    )
+    return ranked_entries[:limit]
+
+
+def select_plate_preprocessing_entries(plate_entries, limit: int):
+    ranked_entries = sorted(
+        plate_entries,
+        key=lambda entry: (
+            entry["scan"].scanned_plate is not None,
+            entry["scan"].scanned_plate_confidence or -1.0,
+        ),
+        reverse=True,
+    )
+    return ranked_entries[:limit]
+
+
 def ensure_preprocessing_dirs(checkpoint_dir: str):
     preprocessing_dir = os.path.join(checkpoint_dir, "preprocessing")
     if os.path.isdir(preprocessing_dir):
@@ -256,13 +282,9 @@ def verify_checkpoint(checkpoint_id: str, users_csv: str = None):
     )
 
     plate_results = []
+    plate_preprocessing_entries = []
     for plate_input in plate_inputs:
         detection_results = verifier.plate_detector.infer(plate_input["image_source"])
-        verifier.plate_detector.process_results(
-            detection_results,
-            plate_input["preprocessing_name"],
-            output_dir=plate_preprocessing_dir,
-        )
         plate_scan = verifier.scan_plate(
             plate_input["image_source"], detection_results=detection_results
         )
@@ -274,6 +296,22 @@ def verify_checkpoint(checkpoint_id: str, users_csv: str = None):
                 "readable": plate_scan.scanned_plate is not None,
                 "reason": plate_scan.reason,
             }
+        )
+        plate_preprocessing_entries.append(
+            {
+                "input": plate_input,
+                "detection_results": detection_results,
+                "scan": plate_scan,
+            }
+        )
+
+    for plate_entry in select_plate_preprocessing_entries(
+        plate_preprocessing_entries, PREPROCESSING_PREVIEW_LIMIT
+    ):
+        verifier.plate_detector.process_results(
+            plate_entry["detection_results"],
+            plate_entry["input"]["preprocessing_name"],
+            output_dir=plate_preprocessing_dir,
         )
 
     readable_plates = [plate for plate in plate_results if plate["readable"]]
@@ -291,10 +329,23 @@ def verify_checkpoint(checkpoint_id: str, users_csv: str = None):
     registered_user = verifier.lookup_registered_user_by_plate(best_plate_result["scanned_plate"])
 
     face_analyses = []
+    face_preprocessing_entries = []
     for face_input in face_inputs:
         face_analysis = verifier.face_service.analyze_face(face_input["image_source"])
         face_analysis.source = face_input["display_path"]
         face_analyses.append(face_analysis)
+        face_preprocessing_entries.append(
+            {
+                "input": face_input,
+                "analysis": face_analysis,
+            }
+        )
+
+    for face_entry in select_face_preprocessing_entries(
+        face_preprocessing_entries, PREPROCESSING_PREVIEW_LIMIT
+    ):
+        face_input = face_entry["input"]
+        face_analysis = face_entry["analysis"]
         verifier.face_service.save_detection_preview(
             face_input["image_source"],
             os.path.join(face_bbox_dir, face_input["preprocessing_name"]),

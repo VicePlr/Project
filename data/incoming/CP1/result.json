@@ -1,7 +1,7 @@
 {
   "checkpoint_id": "CP1",
-  "success": false,
-  "reason": "Face similarity for the scanned plate was below the high-accuracy acceptance threshold.",
+  "success": true,
+  "reason": "Scanned plate matched a registered user and the face matched that user's face folder.",
   "best_match": {
     "scanned_plate": "14-N1 135.62",
     "registered_plate": "14-N1 135.62",
@@ -9,7 +9,7 @@
     "plate_score": 0.9089725017547607,
     "plate_matches": true,
     "user_id": "HE211206",
-    "face_similarity": 0.42923495795786726,
-    "face_image": "face/WIN_20260314_22_47_36_Pro.mp4#frame=54"
+    "face_similarity": 0.8417672393786166,
+    "face_image": "face/WIN_20260314_22_47_36_Pro.mp4#frame=0"
   }
 }
